@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ことばの地図 - ワードクラウド</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3-cloud/1.2.5/d3.layout.cloud.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+            background-color: #f3f4f6;
+        }
+        #wordcloud-svg {
+            width: 100%;
+            height: 100%;
+        }
+        .tab-btn.active {
+            border-bottom: 2px solid #3b82f6;
+            color: #3b82f6;
+            font-weight: 600;
+        }
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 3px solid #3b82f6;
+            width: 20px;
+            height: 20px;
+            -webkit-animation: spin 1s linear infinite;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="text-gray-800 h-screen flex flex-col overflow-hidden">
+    <!-- Header -->
+    <header class="bg-white shadow-sm py-4 px-6 flex justify-between items-center z-10 shrink-0">
+        <div class="flex items-center gap-3">
+            <svg class="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path></svg>
+            <h1 class="text-xl font-bold text-gray-700">ことばの地図</h1>
+        </div>
+        <div id="status-bar" class="text-sm font-medium text-gray-500 flex items-center">
+            <span class="loader" id="dict-loader"></span>
+            <span id="status-text">辞書データを読み込み中...</span>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col md:flex-row overflow-hidden">
+        <!-- Sidebar Controls -->
+        <aside class="w-full md:w-80 bg-white border-r overflow-y-auto shrink-0 flex flex-col">
+            <!-- Tabs -->
+            <div class="flex border-b text-sm">
+                <button class="flex-1 py-3 tab-btn active" onclick="switchTab('mic')">マイク</button>
+                <button class="flex-1 py-3 tab-btn" onclick="switchTab('text')">テキスト</button>
+                <button class="flex-1 py-3 tab-btn" onclick="switchTab('url')">URL</button>
+            </div>
+
+            <div class="p-4 flex-1 flex flex-col gap-4 overflow-y-auto">
+                <!-- Mic Input Area -->
+                <div id="tab-mic" class="tab-content flex flex-col gap-3">
+                    <button id="btn-mic" class="w-full py-3 rounded-lg bg-blue-500 text-white font-bold hover:bg-blue-600 transition shadow flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
+                        <span>マイクを開始</span>
+                    </button>
+                    <div class="text-xs text-gray-500 mt-1">
+                        <p class="font-semibold text-gray-700 mb-1">音声認識状況:</p>
+                        <div id="transcript-preview" class="h-24 overflow-y-auto bg-gray-50 p-2 rounded border text-gray-600 whitespace-pre-wrap"></div>
+                    </div>
+                </div>
+
+                <!-- Text Input Area -->
+                <div id="tab-text" class="tab-content hidden flex flex-col gap-3">
+                    <textarea id="input-text" class="w-full h-32 p-2 border rounded-lg resize-none focus:ring-2 focus:ring-blue-500 outline-none text-sm" placeholder="テキストを貼り付けてください..."></textarea>
+                    <button onclick="processTextInput()" class="w-full py-2 rounded-lg bg-blue-500 text-white font-bold hover:bg-blue-600 transition shadow">解析を実行</button>
+                </div>
+
+                <!-- URL Input Area -->
+                <div id="tab-url" class="tab-content hidden flex flex-col gap-3">
+                    <input type="url" id="input-url" class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm" placeholder="https://...">
+                    <button onclick="processUrlInput()" class="w-full py-2 rounded-lg bg-blue-500 text-white font-bold hover:bg-blue-600 transition shadow">本文を取得して解析</button>
+                    <p class="text-xs text-gray-400">※CORS制限により取得できないサイトがあります</p>
+                </div>
+
+                <hr class="my-2 border-gray-200">
+
+                <!-- Settings -->
+                <div class="flex flex-col gap-3 text-sm">
+                    <h3 class="font-bold text-gray-700">解析設定</h3>
+                    
+                    <div>
+                        <label class="block text-gray-600 mb-1">抽出基準</label>
+                        <select id="setting-score" class="w-full border rounded p-1.5 bg-white">
+                            <option value="tfidf">TF-IDF (重要語抽出)</option>
+                            <option value="frequency">出現頻度</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-gray-600 mb-1">集計範囲 (マイク用)</label>
+                        <select id="setting-range" class="w-full border rounded p-1.5 bg-white">
+                            <option value="60">直近 1分</option>
+                            <option value="180">直近 3分</option>
+                            <option value="600">直近 10分</option>
+                            <option value="0">全期間</option>
+                        </select>
+                    </div>
+
+                    <div class="flex gap-2">
+                        <div class="flex-1">
+                            <label class="block text-gray-600 mb-1">表示語数</label>
+                            <select id="setting-count" class="w-full border rounded p-1.5 bg-white">
+                                <option value="50">50語</option>
+                                <option value="100" selected>100語</option>
+                                <option value="200">200語</option>
+                            </select>
+                        </div>
+                        <div class="flex-1">
+                            <label class="block text-gray-600 mb-1">更新間隔</label>
+                            <select id="setting-interval" class="w-full border rounded p-1.5 bg-white">
+                                <option value="5000">5秒</option>
+                                <option value="10000">10秒</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-auto pt-4 flex gap-2">
+                    <button onclick="downloadPNG()" class="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded text-sm font-medium transition">PNG保存</button>
+                    <button onclick="downloadCSV()" class="flex-1 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded text-sm font-medium transition">CSV保存</button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Workspace (Cloud + Sidebar) -->
+        <div class="flex-1 flex flex-col lg:flex-row overflow-hidden">
+            <!-- Word Cloud Canvas -->
+            <section class="flex-1 bg-white relative p-4" id="cloud-container">
+                <div id="wordcloud-wrapper" class="w-full h-full border-2 border-dashed border-gray-200 rounded-xl flex items-center justify-center bg-white relative">
+                    <!-- D3 SVG will be injected here -->
+                    <p id="empty-state" class="text-gray-400 absolute pointer-events-none">データがありません</p>
+                </div>
+            </section>
+
+            <!-- Right Sidebar: Rankings & Exclusions -->
+            <aside class="w-full lg:w-72 bg-white border-l overflow-y-auto shrink-0 flex flex-col border-t lg:border-t-0">
+                <div class="p-4 border-b flex-1 flex flex-col min-h-[50%]">
+                    <h3 class="font-bold text-gray-700 mb-3 text-sm">頻出語 / 重要語</h3>
+                    <div id="ranking-list" class="flex-1 flex flex-col gap-3 overflow-y-auto">
+                        <p class="text-sm text-gray-400">データがありません</p>
+                    </div>
+                </div>
+                <div class="p-4 flex-1 flex flex-col min-h-[30%]">
+                    <h3 class="font-bold text-gray-700 mb-3 text-sm">除外した単語</h3>
+                    <div id="excluded-list" class="flex flex-wrap gap-2 overflow-y-auto content-start">
+                        <p class="text-sm text-gray-400">除外された単語はありません</p>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </main>
+
+    <script>
+        // --- 状態管理 ---
+        const State = {
+            tokenizer: null,
+            isDictLoaded: false,
+            isRecording: false,
+            recognition: null,
+            utterances: [], // { text: string, timestamp: number, isFinal: boolean }
+            currentInterim: "",
+            updateTimer: null,
+            currentWordData: [], // [{text, size, count, tfidf}]
+            activeMode: 'mic', // mic, text, url
+            documentList: [], // タイムスタンプ付きの処理用データ配列 (ローリングウィンドウ・解析用)
+            excludedWords: new Set() // 除外単語リスト
+        };
+
+        // --- UI初期化とイベント設定 ---
+        const UI = {
+            btnMic: document.getElementById('btn-mic'),
+            preview: document.getElementById('transcript-preview'),
+            statusText: document.getElementById('status-text'),
+            dictLoader: document.getElementById('dict-loader'),
+            emptyState: document.getElementById('empty-state'),
+            wrapper: document.getElementById('wordcloud-wrapper'),
+            rankingList: document.getElementById('ranking-list'),
+            excludedList: document.getElementById('excluded-list')
+        };
+
+        function switchTab(tabId) {
+            State.activeMode = tabId;
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
+            
+            event.currentTarget.classList.add('active');
+            document.getElementById(`tab-${tabId}`).classList.remove('hidden');
+
+            if(tabId !== 'mic' && State.isRecording) {
+                stopMic();
+            }
+        }
+
+        // --- kuromoji.js 初期化 ---
+        function initKuromoji() {
+            kuromoji.builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict" }).build((err, tokenizer) => {
+                if (err) {
+                    console.error("kuromoji initialization error:", err);
+                    UI.statusText.textContent = "辞書読込失敗（代替解析を使用します）";
+                    UI.statusText.classList.add('text-red-500');
+                    UI.dictLoader.style.display = 'none';
+                    // Fallback to Intl.Segmenter will be handled in tokenizeText
+                } else {
+                    State.tokenizer = tokenizer;
+                    State.isDictLoaded = true;
+                    UI.statusText.textContent = "準備完了";
+                    UI.statusText.classList.add('text-green-500');
+                    UI.dictLoader.style.display = 'none';
+                }
+            });
+        }
+
+        // --- 音声認識 (Web Speech API) ---
+        function setupSpeechRecognition() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                alert("お使いのブラウザは音声認識をサポートしていません。Chromeをご利用ください。");
+                return;
+            }
+
+            const rec = new SpeechRecognition();
+            rec.lang = 'ja-JP';
+            rec.continuous = true;
+            rec.interimResults = true;
+
+            rec.onstart = () => {
+                State.isRecording = true;
+                updateMicUI();
+                startUpdateTimer();
+            };
+
+            rec.onresult = (event) => {
+                let interim = "";
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    const res = event.results[i];
+                    if (res.isFinal) {
+                        State.utterances.push({
+                            text: res[0].transcript,
+                            timestamp: Date.now()
+                        });
+                        State.currentInterim = "";
+                    } else {
+                        interim += res[0].transcript;
+                    }
+                }
+                State.currentInterim = interim;
+                updateTranscriptPreview();
+            };
+
+            rec.onerror = (event) => {
+                console.error("Speech recognition error:", event.error);
+                if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                    stopMic();
+                }
+            };
+
+            rec.onend = () => {
+                if (State.isRecording) {
+                    // 予期せぬ切断の場合は再開
+                    try { rec.start(); } catch(e) {}
+                } else {
+                    updateMicUI();
+                }
+            };
+
+            State.recognition = rec;
+        }
+
+        function toggleMic() {
+            if (!State.recognition) setupSpeechRecognition();
+            
+            if (State.isRecording) {
+                stopMic();
+            } else {
+                State.utterances = []; // マイク開始時にリセットするかどうか。今回は継続させるならコメントアウト。用途による。
+                State.recognition.start();
+            }
+        }
+
+        function stopMic() {
+            State.isRecording = false;
+            if(State.recognition) State.recognition.stop();
+            stopUpdateTimer();
+            updateMicUI();
+        }
+
+        function updateMicUI() {
+            if (State.isRecording) {
+                UI.btnMic.innerHTML = `<svg class="w-5 h-5 text-red-500 animate-pulse" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 002 0V8a1 1 0 00-1-1zm4 0a1 1 0 00-1 1v4a1 1 0 002 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg> <span>停止</span>`;
+                UI.btnMic.classList.replace('bg-blue-500', 'bg-white');
+                UI.btnMic.classList.replace('text-white', 'text-gray-700');
+                UI.btnMic.classList.add('border', 'border-gray-300');
+            } else {
+                UI.btnMic.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg> <span>マイクを開始</span>`;
+                UI.btnMic.classList.replace('bg-white', 'bg-blue-500');
+                UI.btnMic.classList.replace('text-gray-700', 'text-white');
+                UI.btnMic.classList.remove('border', 'border-gray-300');
+            }
+        }
+
+        function updateTranscriptPreview() {
+            const rangeSec = parseInt(document.getElementById('setting-range').value);
+            const now = Date.now();
+            
+            // 範囲内の確定テキスト
+            const validTexts = State.utterances
+                .filter(u => rangeSec === 0 || (now - u.timestamp) <= rangeSec * 1000)
+                .map(u => u.text);
+            
+            let displayHtml = validTexts.join('。') + (validTexts.length > 0 ? '。' : '');
+            if (State.currentInterim) {
+                displayHtml += `<span class="text-gray-400">${State.currentInterim}</span>`;
+            }
+            UI.preview.innerHTML = displayHtml || 'ここに音声認識結果が表示されます...';
+            UI.preview.scrollTop = UI.preview.scrollHeight;
+        }
+
+        UI.btnMic.addEventListener('click', toggleMic);
+
+        // --- タイマー処理 ---
+        function startUpdateTimer() {
+            stopUpdateTimer();
+            const interval = parseInt(document.getElementById('setting-interval').value);
+            State.updateTimer = setInterval(processMicData, interval);
+        }
+
+        function stopUpdateTimer() {
+            if (State.updateTimer) clearInterval(State.updateTimer);
+        }
+
+        document.getElementById('setting-interval').addEventListener('change', () => {
+            if (State.isRecording) startUpdateTimer();
+        });
+
+
+        // --- テキスト解析コアロジック ---
+
+        // 言いよどみ・フィラー除去
+        function removeFillers(text) {
+            const fillers = ['えーと', 'えっと', 'えー', 'ええ', 'あー', 'あのー', 'うーん', 'うん', 'まぁ', 'まあ', 'なんか', 'ていうか'];
+            const regex = new RegExp(`(${fillers.join('|')})`, 'g');
+            return text.replace(regex, '');
+        }
+
+        // 解析処理 (kuromoji or Intl.Segmenter)
+        function tokenizeText(text) {
+            text = removeFillers(text);
+            const words = [];
+
+            if (State.isDictLoaded && State.tokenizer) {
+                const tokens = State.tokenizer.tokenize(text);
+                tokens.forEach(token => {
+                    let word = token.surface_form;
+                    
+                    // 品詞判定と基本形の取得
+                    const pos = token.pos;
+                    const detail = token.pos_detail_1;
+
+                    if (pos === "名詞") {
+                        // 意味の薄い名詞を除外
+                        if (detail === "数" || detail === "非自立" || detail === "代名詞") return;
+                    } else if (pos === "動詞" || pos === "形容詞") {
+                        if (detail === "非自立") return;
+                        if (token.basic_form && token.basic_form !== '*') {
+                            word = token.basic_form; // 活用形を基本形に正規化
+                        }
+                    } else {
+                        return; // 名詞・動詞・形容詞以外は除外
+                    }
+
+                    // ゴミ除去（数字のみ、1文字のひらがな/カタカナ、記号等を除外）
+                    if (/^[0-9０-９]+$/.test(word)) return;
+                    if (/^[ぁ-んァ-ン]$/.test(word)) return; 
+                    if (/^[!-/:-@[-`{-~、。，．・\s]+$/.test(word)) return;
+
+                    words.push(word);
+                });
+            } else {
+                // Fallback: Intl.Segmenter
+                const segmenter = new Intl.Segmenter('ja', { granularity: 'word' });
+                const segments = segmenter.segment(text);
+                for (const { segment, isWordLike } of segments) {
+                    if (isWordLike && segment.length > 1 && !/^[ぁ-んァ-ン一-龥]+$/.test(segment) === false) {
+                        const ignore = ['する', 'いる', 'ある', 'なる', 'れる', 'られる', 'こと', 'もの', 'これ', 'それ', 'あれ'];
+                        if (!ignore.includes(segment)) words.push(segment);
+                    }
+                }
+            }
+            return words;
+        }
+
+        // TF-IDF計算とスコアリング（除外リスト適用）
+        function calculateScores(docsWordsArray) {
+            const docCount = docsWordsArray.length;
+            const df = {}; // Document Frequency (単語を含む文書数)
+            const tfs = []; // 各文書の Term Frequency 割合
+            const globalTf = {}; // 全体での単純な出現回数(Count)
+
+            docsWordsArray.forEach(words => {
+                const tf = {};
+                const uniqueWords = new Set();
+                
+                // 【重要】ユーザー除外リスト(excludedWords)に含まれる単語はここでカウントから除外
+                const validWords = words.filter(w => !State.excludedWords.has(w));
+                const docWordsCount = validWords.length;
+
+                validWords.forEach(w => {
+                    tf[w] = (tf[w] || 0) + 1;
+                    globalTf[w] = (globalTf[w] || 0) + 1;
+                    uniqueWords.add(w);
+                });
+                
+                // TF = その文書内の単語の出現回数 / その文書の有効総単語数
+                const normalizedTf = {};
+                Object.keys(tf).forEach(w => {
+                    normalizedTf[w] = tf[w] / (docWordsCount || 1);
+                });
+                tfs.push(normalizedTf);
+                
+                uniqueWords.forEach(w => {
+                    df[w] = (df[w] || 0) + 1;
+                });
+            });
+
+            const wordScores = [];
+            Object.keys(globalTf).forEach(word => {
+                const totalCount = globalTf[word];
+                let maxTfidf = 0;
+                
+                // IDF = log(全文書数 / その単語を含む文書数) + 1
+                const idf = Math.log(docCount / df[word]) + 1; 
+
+                tfs.forEach(docTf => {
+                    if (docTf[word]) {
+                        const tfidf = docTf[word] * idf;
+                        // 各文書におけるTF-IDFの最大値をその単語のスコアとする
+                        if(tfidf > maxTfidf) maxTfidf = tfidf;
+                    }
+                });
+
+                wordScores.push({
+                    text: word,
+                    count: totalCount,
+                    tfidf: maxTfidf
+                });
+            });
+
+            return wordScores;
+        }
+
+        // --- データ処理エントリポイント ---
+        function processMicData() {
+            if(State.activeMode !== 'mic') return;
+            
+            const now = Date.now();
+            // 確定結果をドキュメントリストに変換
+            const currentDocs = State.utterances.map(u => ({ text: u.text, timestamp: u.timestamp }));
+            
+            // 暫定結果も1つのドキュメントとして扱う
+            if (State.currentInterim) {
+                currentDocs.push({ text: State.currentInterim, timestamp: now });
+            }
+            
+            State.documentList = currentDocs;
+            reprocessCurrentData();
+        }
+
+        function processTextInput() {
+            const text = document.getElementById('input-text').value;
+            if (!text.trim()) return;
+            
+            // 改行や句点でドキュメント（文）に分割
+            const sentences = text.split(/[。\n]+/).filter(s => s.trim().length > 0);
+            State.documentList = sentences.map(s => ({ text: s, timestamp: Date.now() }));
+            reprocessCurrentData();
+        }
+
+        async function processUrlInput() {
+            const url = document.getElementById('input-url').value;
+            if(!url) return;
+
+            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+            
+            try {
+                const response = await fetch(proxyUrl);
+                const data = await response.json();
+                
+                // HTMLパースしてテキスト抽出
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(data.contents, 'text/html');
+                const elementsToRemove = doc.querySelectorAll('script, style, noscript, nav, footer, header');
+                elementsToRemove.forEach(el => el.remove());
+                
+                const text = doc.body.textContent || "";
+                document.getElementById('input-text').value = text;
+                
+                const sentences = text.split(/[。\n]+/).filter(s => s.trim().length > 0);
+                State.documentList = sentences.map(s => ({ text: s, timestamp: Date.now() }));
+                reprocessCurrentData();
+
+            } catch(e) {
+                console.error(e);
+                alert("URLからの取得に失敗しました。CORS制限または無効なURLの可能性があります。");
+            }
+        }
+
+        // データの再集計と描画のトリガー (ローリングウィンドウの適用)
+        function reprocessCurrentData() {
+            const rangeSec = parseInt(document.getElementById('setting-range').value);
+            const now = Date.now();
+            
+            // 1. ローリングウィンドウ (時間枠制限) の適用
+            let validDocs = State.documentList;
+            if (State.activeMode === 'mic' && rangeSec > 0) {
+                validDocs = State.documentList.filter(doc => (now - doc.timestamp) <= rangeSec * 1000);
+            }
+
+            if (validDocs.length === 0) {
+                drawCloud([]);
+                drawBarChart([], 'tfidf', 0);
+                drawExcludedList();
+                return;
+            }
+
+            // 2. 形態素解析 (tokenizeText内でフィラー・不要語除去)
+            const docsWords = validDocs.map(doc => tokenizeText(doc.text)).filter(arr => arr.length > 0);
+            
+            if (docsWords.length === 0) {
+                drawCloud([]);
+                drawBarChart([], 'tfidf', 0);
+                drawExcludedList();
+                return;
+            }
+
+            // 3. スコア計算 (calculateScores内で除外リスト適用)
+            const scores = calculateScores(docsWords);
+            
+            const scoreType = document.getElementById('setting-score').value;
+            const maxWords = parseInt(document.getElementById('setting-count').value);
+
+            // 4. ソートして上位を取得
+            scores.sort((a, b) => b[scoreType === 'tfidf' ? 'tfidf' : 'count'] - a[scoreType === 'tfidf' ? 'tfidf' : 'count']);
+            const topWords = scores.slice(0, maxWords);
+            
+            if(topWords.length === 0) {
+                drawCloud([]);
+                drawBarChart([], scoreType, 0);
+                drawExcludedList();
+                return;
+            }
+
+            // サイズ計算 (D3描画用)
+            const maxScore = topWords[0][scoreType === 'tfidf' ? 'tfidf' : 'count'];
+            const minScore = topWords[topWords.length-1][scoreType === 'tfidf' ? 'tfidf' : 'count'];
+            
+            const minSize = 14;
+            const maxSize = 80;
+
+            const cloudData = topWords.map(w => {
+                const val = w[scoreType === 'tfidf' ? 'tfidf' : 'count'];
+                const size = maxScore === minScore ? (maxSize+minSize)/2 : minSize + ((val - minScore) / (maxScore - minScore)) * (maxSize - minSize);
+                return {
+                    text: w.text,
+                    size: size,
+                    count: w.count,
+                    tfidf: w.tfidf,
+                    scoreValue: val 
+                };
+            });
+
+            State.currentWordData = cloudData;
+            drawCloud(cloudData);
+            drawBarChart(cloudData, scoreType, maxScore);
+            drawExcludedList();
+        }
+
+        // --- D3 ワードクラウド描画 ---
+        let currentSvg = null;
+
+        function drawCloud(words) {
+            UI.wrapper.innerHTML = ''; // Clear previous
+            
+            if (words.length === 0) {
+                UI.wrapper.appendChild(UI.emptyState);
+                UI.emptyState.style.display = 'block';
+                return;
+            }
+            UI.emptyState.style.display = 'none';
+
+            const width = UI.wrapper.clientWidth;
+            const height = UI.wrapper.clientHeight;
+
+            const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
+
+            const layout = d3.layout.cloud()
+                .size([width, height])
+                .words(words)
+                .padding(5)
+                .rotate(() => (~~(Math.random() * 2) * 0)) // 回転なしの方が見やすい場合が多い
+                .font('Inter')
+                .fontSize(d => d.size)
+                .on("end", draw);
+
+            layout.start();
+
+            function draw(words) {
+                const svg = d3.select("#wordcloud-wrapper").append("svg")
+                    .attr("id", "wordcloud-svg")
+                    .attr("width", width)
+                    .attr("height", height)
+                    .append("g")
+                    .attr("transform", "translate(" + width / 2 + "," + height / 2 + ")");
+
+                currentSvg = d3.select("#wordcloud-svg").node();
+
+                svg.selectAll("text")
+                    .data(words)
+                    .enter().append("text")
+                    .style("font-size", d => d.size + "px")
+                    .style("font-family", "Inter, sans-serif")
+                    .style("font-weight", "bold")
+                    .style("fill", (d, i) => colorScale(i))
+                    .attr("text-anchor", "middle")
+                    .attr("transform", d => "translate(" + [d.x, d.y] + ")rotate(" + d.rotate + ")")
+                    .text(d => d.text)
+                    .append("title") // tooltip
+                    .text(d => `出現回数: ${d.count}\nTF-IDF: ${d.tfidf.toFixed(2)}`);
+            }
+        }
+
+        // --- ランキング(棒グラフ)・除外リスト描画 ---
+        function drawBarChart(words, scoreType, maxScore) {
+            UI.rankingList.innerHTML = '';
+            if(words.length === 0) {
+                UI.rankingList.innerHTML = '<p class="text-sm text-gray-400">データがありません</p>';
+                return;
+            }
+
+            words.forEach(w => {
+                const percentage = maxScore > 0 ? (w.scoreValue / maxScore) * 100 : 0;
+                const displayScore = scoreType === 'tfidf' ? w.tfidf.toFixed(2) : w.count;
+
+                const item = document.createElement('div');
+                item.className = 'flex items-center justify-between text-sm group';
+                item.innerHTML = `
+                    <div class="flex-1 min-w-0 mr-3">
+                        <div class="flex justify-between text-xs text-gray-600 mb-1">
+                            <span class="truncate font-medium">${w.text}</span>
+                            <span>${displayScore}</span>
+                        </div>
+                        <div class="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                            <div class="bg-blue-400 h-1.5 rounded-full" style="width: ${percentage}%"></div>
+                        </div>
+                    </div>
+                    <button onclick="excludeWord('${w.text}')" class="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1 focus:outline-none" title="除外">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                `;
+                UI.rankingList.appendChild(item);
+            });
+        }
+
+        function drawExcludedList() {
+            UI.excludedList.innerHTML = '';
+            if (State.excludedWords.size === 0) {
+                UI.excludedList.innerHTML = '<p class="text-sm text-gray-400">除外された単語はありません</p>';
+                return;
+            }
+
+            State.excludedWords.forEach(word => {
+                const badge = document.createElement('span');
+                badge.className = 'inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-100 text-gray-600 text-xs border group hover:border-blue-300 transition-colors cursor-default';
+                badge.innerHTML = `
+                    ${word}
+                    <button onclick="restoreWord('${word}')" class="text-gray-400 hover:text-blue-500 focus:outline-none ml-1">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                `;
+                UI.excludedList.appendChild(badge);
+            });
+        }
+
+        window.excludeWord = function(word) {
+            State.excludedWords.add(word);
+            reprocessCurrentData();
+        };
+
+        window.restoreWord = function(word) {
+            State.excludedWords.delete(word);
+            reprocessCurrentData();
+        };
+
+        // 設定変更時に即座に反映
+        ['setting-score', 'setting-range', 'setting-count'].forEach(id => {
+            document.getElementById(id).addEventListener('change', () => {
+                if (State.documentList.length > 0) reprocessCurrentData();
+            });
+        });
+
+        // リサイズ対応
+        window.addEventListener('resize', () => {
+            if (State.currentWordData && State.currentWordData.length > 0) {
+                // Throttle resize
+                clearTimeout(window.resizeTimer);
+                window.resizeTimer = setTimeout(() => {
+                    drawCloud(State.currentWordData);
+                }, 300);
+            }
+        });
+
+
+        // --- 保存機能 ---
+        function downloadPNG() {
+            const svgElement = document.getElementById('wordcloud-svg');
+            if (!svgElement) {
+                alert("保存するワードクラウドがありません。");
+                return;
+            }
+
+            const svgData = new XMLSerializer().serializeToString(svgElement);
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            const img = new Image();
+            
+            canvas.width = svgElement.getAttribute("width");
+            canvas.height = svgElement.getAttribute("height");
+
+            img.onload = function() {
+                // 背景を白に
+                ctx.fillStyle = "white";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0);
+                
+                const pngFile = canvas.toDataURL("image/png");
+                const downloadLink = document.createElement("a");
+                downloadLink.download = `kotoba_map_${new Date().getTime()}.png`;
+                downloadLink.href = pngFile;
+                downloadLink.click();
+            };
+            
+            img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgData)));
+        }
+
+        function downloadCSV() {
+            if (!State.currentWordData || State.currentWordData.length === 0) {
+                alert("保存するデータがありません。");
+                return;
+            }
+
+            // CSVヘッダー
+            let csvContent = "単語,出現回数,TF-IDFスコア\n";
+            
+            State.currentWordData.forEach(row => {
+                csvContent += `"${row.text}",${row.count},${row.tfidf.toFixed(4)}\n`;
+            });
+
+            // BOMを追加して文字化け防止
+            const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+            const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            
+            const downloadLink = document.createElement("a");
+            downloadLink.href = url;
+            downloadLink.download = `kotoba_map_${new Date().getTime()}.csv`;
+            downloadLink.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 初期化実行
+        window.onload = () => {
+            initKuromoji();
+            setupSpeechRecognition();
+        };
+
+    </script>
+</body>
+</html>
