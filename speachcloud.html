@@ -17,7 +17,6 @@
         .fallback { background-color: #8e44ad; color: white; }
         .main-container { display: flex; flex: 1; overflow: hidden; }
         
-        /* 左側（操作パネル＋ワードクラウド） */
         .left-pane { flex: 1; display: flex; flex-direction: column; padding: 10px; overflow-y: auto; }
         .controls { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
         .control-group { display: flex; align-items: center; gap: 5px; margin-right: 15px; }
@@ -30,7 +29,6 @@
         #cloud-container { flex: 1; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 400px; }
         #cloud-svg { width: 100%; height: 100%; }
 
-        /* 右側（サイドバー） */
         .right-sidebar { width: 300px; background: white; border-left: 1px solid #ddd; display: flex; flex-direction: column; overflow: hidden; }
         .sidebar-header { background: #ecf0f1; padding: 10px; font-weight: bold; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; }
         .sidebar-content { flex: 1; overflow-y: auto; padding: 10px; }
@@ -139,33 +137,59 @@
             textInput: document.getElementById('text-input')
         };
 
-        // --- 1. 解析エンジンの初期化 (kuromoji & フォールバック) ---
-        // Intl.Segmenter の準備 (Chrome, Safari, Edgeで標準搭載)
+        // --- 1. 解析エンジンの確実な初期化 (3秒タイムアウト付き) ---
+        let isEngineReady = false;
+
         if (window.Intl && Intl.Segmenter) {
             State.segmenter = new Intl.Segmenter('ja-JP', { granularity: 'word' });
         }
 
-        // 辞書URLを最も安定した jsdelivr に変更（末尾スラッシュなし）
-        kuromoji.builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict" }).build((err, tokenizer) => {
-            if (err) {
-                console.warn("kuromoji辞書エラー、代替解析(Intl.Segmenter)に切り替えます:", err);
-                if (State.segmenter) {
-                    State.useFallback = true;
-                    UI.status.innerText = "準備完了 (簡易解析モード)";
-                    UI.status.className = "status-badge fallback";
-                    startApp();
-                } else {
-                    UI.status.innerText = "エラー: 解析エンジン非対応";
-                    UI.status.className = "status-badge error";
-                    alert("お使いのブラウザは日本語解析に対応していません。");
-                }
-                return;
+        // 失敗・フリーズ時の強制切り替え処理
+        function forceFallback() {
+            if (isEngineReady) return;
+            isEngineReady = true;
+            console.warn("辞書の読み込みがタイムアウトしました。代替解析で起動します。");
+            
+            if (State.segmenter) {
+                State.useFallback = true;
+                UI.status.innerText = "準備完了 (簡易解析モード)";
+                UI.status.className = "status-badge fallback";
+                startApp();
+            } else {
+                UI.status.innerText = "エラー: 解析非対応";
+                UI.status.className = "status-badge error";
+                alert("お使いのブラウザは日本語解析に対応していません。");
             }
-            State.tokenizer = tokenizer;
-            UI.status.innerText = "準備完了 (高精度モード)";
-            UI.status.className = "status-badge ready";
-            startApp();
-        });
+        }
+
+        // 3秒間応答がなければ強制的に代替モードへ移行
+        const fallbackTimer = setTimeout(forceFallback, 3000);
+
+        try {
+            if (typeof kuromoji === 'undefined') {
+                // kuromoji自体が読み込めていない場合
+                forceFallback();
+            } else {
+                kuromoji.builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict" }).build((err, tokenizer) => {
+                    if (isEngineReady) return; // 既にタイムアウトで開始済みの場合は処理しない
+                    
+                    if (err) {
+                        forceFallback();
+                        return;
+                    }
+                    
+                    // 成功した場合はタイマーを解除し、高精度モードで起動
+                    clearTimeout(fallbackTimer);
+                    isEngineReady = true;
+                    State.tokenizer = tokenizer;
+                    UI.status.innerText = "準備完了 (高精度モード)";
+                    UI.status.className = "status-badge ready";
+                    startApp();
+                });
+            }
+        } catch (e) {
+            forceFallback();
+        }
 
         function startApp() {
             UI.btnMic.disabled = false;
@@ -265,7 +289,6 @@
             const docFreq = {};
             const docCount = targetDocs.length;
             
-            // フィラーや不要な文字の除外用
             const fillerRegex = /^(えーっと|えーと|えー|ええ|あのー|あの|うーん|うん|まぁ|まあ|なんか|なんだろう)$/;
             const numberRegex = /^[0-9０-９]+$/; 
 
@@ -294,7 +317,6 @@
                     for (const seg of segments) {
                         if (seg.isWordLike) {
                             let word = seg.segment;
-                            // 1文字のひらがな（助詞など）は除外
                             if (word.length <= 1 && /^[ぁ-んァ-ン]$/.test(word)) continue;
                             if (fillerRegex.test(word) || numberRegex.test(word) || State.excludedWords.has(word)) continue;
                             
@@ -407,61 +429,4 @@
                 UI.excludedEmpty.style.display = "none";
                 Array.from(State.excludedWords).forEach(word => {
                     const li = document.createElement('li');
-                    li.className = 'word-item';
-                    
-                    const spanName = document.createElement('span');
-                    spanName.className = 'word-text';
-                    spanName.innerText = word;
-                    
-                    const btnRestore = document.createElement('button');
-                    btnRestore.className = 'btn-restore';
-                    btnRestore.innerText = '復元';
-                    btnRestore.onclick = () => { State.excludedWords.delete(word); processAndDraw(); };
-
-                    li.appendChild(spanName);
-                    li.appendChild(btnRestore);
-                    UI.excludedList.appendChild(li);
-                });
-            }
-        }
-
-        // --- 6. エクスポート ---
-        document.getElementById('btn-export-csv').addEventListener('click', () => {
-            if(State.currentWordData.length === 0) return alert("データがありません");
-            let csv = "単語,出現回数,スコア\n";
-            State.currentWordData.forEach(d => { csv += `${d.text},${d.count},${d.size.toFixed(3)}\n`; });
-            const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csv], {type: 'text/csv'});
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `kotoba_${Date.now()}.csv`;
-            a.click();
-        });
-
-        document.getElementById('btn-export-png').addEventListener('click', () => {
-            const svgElement = document.getElementById('cloud-svg');
-            const serializer = new XMLSerializer();
-            const svgString = serializer.serializeToString(svgElement);
-            const canvas = document.createElement('canvas');
-            canvas.width = svgElement.clientWidth || 800;
-            canvas.height = svgElement.clientHeight || 600;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = "white";
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            const img = new Image();
-            img.onload = () => {
-                ctx.drawImage(img, 0, 0);
-                const a = document.createElement('a');
-                a.download = `kotoba_cloud_${Date.now()}.png`;
-                a.href = canvas.toDataURL('image/png');
-                a.click();
-            };
-            img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgString)));
-        });
-
-        window.addEventListener('resize', () => { if(State.currentWordData.length > 0) drawCloud(State.currentWordData); });
-        UI.timeWindow.addEventListener('change', processAndDraw);
-        UI.calcMode.addEventListener('change', processAndDraw);
-    </script>
-</body>
-</html>
+                    li.className = 'word-
